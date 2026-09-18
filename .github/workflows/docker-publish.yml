@@ -26,10 +26,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - component: frontend
-            image: cellphone-camera-frontend
-          - component: handler
-            image: cellphone-camera-handler
+          - component: endpoint-picker-with-plugin
+            image: endpoint-picker-with-plugin
+
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
