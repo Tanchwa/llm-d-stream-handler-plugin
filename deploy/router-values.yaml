@@ -1,0 +1,57 @@
+# Helm values for the llm-d-router-gateway chart that swap in this repo's EPP
+# image and add the stream handler plugin to the EndpointPickerConfig.
+#
+# These are the values verified against the test-single cluster's chart
+# (oci://ghcr.io/llm-d/charts/llm-d-router-gateway, version v0). Render before
+# applying to confirm nothing has moved:
+#
+#   helm template llm-d-quickstart \
+#     oci://ghcr.io/llm-d/charts/llm-d-router-gateway --version v0 \
+#     -f deploy/router-values.yaml | grep -E 'image:|config-file'
+#
+# In test-single the EPP is deployed by an ArgoCD Application with
+# selfHeal: true, so this content belongs in that Application's inline
+# `source.helm.values`, NOT in a `kubectl apply`. See the runbook in README.md.
+router:
+  # Keep whatever your guide already sets here; repeated because Helm values
+  # replace rather than merge when passed as a separate file.
+  modelServers:
+    matchLabels:
+      llm-d.ai/guide: "optimized-baseline"
+
+  epp:
+    # The EPP built from this repo: stock llm-d plus one plugin registration.
+    image:
+      registry: docker.io/tanchwa
+      repository: llm-d-stream-handler-epp
+      # Pin a real tag in production; the chart defaults to pullPolicy Always.
+      tag: v0.1.0
+
+    # Renaming the file from the guide's default makes the change obvious in
+    # `kubectl describe` and keeps the original config intact for rollback.
+    pluginsConfigFile: "stream-handler-plugins.yaml"
+    pluginsCustomConfig:
+      stream-handler-plugins.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        - type: approx-prefix-cache-producer
+        - type: inflight-load-producer
+        - type: prefix-cache-affinity-filter
+        - type: token-load-scorer
+        - type: stream-handler-provisioner
+          parameters:
+            namespace: cellphone-cam
+            jobTemplateConfigMap: cellphone-camera-handler-job-template
+            # This guide runs ONE profile named "default" and no disagg handler,
+            # so there is no profile called "decode". Naming it explicitly here
+            # beats relying on the plugin's primary-profile fallback, because a
+            # future switch to disagg would otherwise change behaviour silently.
+            decodeProfile: default
+            resultSinkBaseURL: http://cellphone-camera-frontend.cellphone-cam.svc.cluster.local:8080/ingest
+            allowedStreamSchemes: [http, https, rtsp]
+        schedulingProfiles:
+        - name: default
+          plugins:
+          - pluginRef: prefix-cache-affinity-filter
+          - pluginRef: token-load-scorer

@@ -1,0 +1,82 @@
+# Grants the EPP permission to provision handler Jobs.
+#
+# This file deliberately contains ONLY a RoleBinding.
+#
+# The Role it references already exists and is owned elsewhere: the ingestor repo
+# defines it in k8s/handler/rbac.yaml, and in the test-single cluster it carries
+# an argocd.argoproj.io/tracking-id annotation, meaning ArgoCD manages it. A
+# `kubectl apply` of a duplicate Role from here is drift that ArgoCD reverts on
+# its next sync, so this repo does not ship one.
+#
+# ── Why a RoleBinding is all that is needed ──────────────────────────────────
+#
+# A RoleBinding is an edge, not a mutation. It modifies neither the Role nor the
+# ServiceAccount; the ServiceAccount object has no field recording what it may
+# do. Authorization is resolved per request: the API server authenticates the
+# EPP's projected token to the username
+# system:serviceaccount:llm-d-quickstart:llm-d-quickstart-epp, then looks for a
+# RoleBinding in the namespace being addressed whose subjects match.
+#
+# Three namespaces, three different meanings:
+#
+#   * this RoleBinding's namespace (cellphone-cam) decides WHERE the permissions
+#     apply -- the EPP gets no rights in any other namespace
+#   * roleRef resolves in this same namespace; a RoleBinding cannot reference a
+#     Role in a different one
+#   * the subject may live anywhere, and here it does -- the EPP runs in
+#     llm-d-quickstart and provisions Jobs in cellphone-cam
+#
+# That last line is the whole reason this file exists: a cross-namespace grant is
+# expressed only by placing the binding in the TARGET namespace and naming a
+# foreign subject.
+#
+# ── Before applying ─────────────────────────────────────────────────────────
+#
+# The ingestor repo ships a RoleBinding of the same Role pointing at a
+# placeholder subject (llm-d-gateway-hook in namespace llm-d) that its README
+# flags as a guess. In test-single that namespace does not exist, so that binding
+# grants nothing and the EPP answers "no" to every permission the plugin needs.
+# This binding is named differently so the two coexist; the placeholder one is
+# inert and can be left or deleted.
+#
+# Confirm the subject for your cluster, and prefer applying through ArgoCD rather
+# than kubectl if the surrounding resources are managed:
+#
+#   kubectl -n <llm-d-ns> get deploy <epp> \
+#     -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}'
+#
+# Verify afterwards -- all three must answer yes, and a namespace the plugin does
+# not target must still answer no:
+#
+#   SA=system:serviceaccount:llm-d-quickstart:llm-d-quickstart-epp
+#   kubectl auth can-i create jobs    --as=$SA -n cellphone-cam   # yes
+#   kubectl auth can-i delete jobs    --as=$SA -n cellphone-cam   # yes
+#   kubectl auth can-i get configmaps --as=$SA -n cellphone-cam   # yes
+#   kubectl auth can-i create jobs    --as=$SA -n default         # no
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  # Distinct from the ingestor's binding of the same Role so both can coexist.
+  name: llm-d-epp-handler-provisioner
+  # WHERE the permissions apply: the namespace handler Jobs are created in, which
+  # must match the plugin's `namespace` parameter.
+  namespace: cellphone-cam
+  labels:
+    app.kubernetes.io/part-of: llm-d-stream-handler-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  # Defined by the ingestor repo in this same namespace. Its rules are:
+  #   configmaps      get,list,watch          read the Job template
+  #   batch/jobs      create,get,list,watch,delete
+  #   pods, pods/log  get,list,watch / get    debugging only
+  #   serviceaccounts get                     run Jobs as the handler SA
+  name: cellphone-camera-handler-provisioner
+subjects:
+  - kind: ServiceAccount
+    # The identity the EPP pod actually runs as. It lives in a DIFFERENT
+    # namespace from this binding, which is exactly what makes this a
+    # cross-namespace grant.
+    name: llm-d-quickstart-epp
+    namespace: llm-d-quickstart
