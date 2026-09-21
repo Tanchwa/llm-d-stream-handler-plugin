@@ -215,7 +215,7 @@ Eventually, I will be trying to incorperate this with my company's existing stre
 ### 1. Deploy the EPP with this plugin config
 EPP Plugins and config are exposed in llm-d's routerlib [values.yaml](https://github.com/llm-d/llm-d-router/blob/main/config/charts/routerlib/values.yaml). Although you will have to call the chart through either the llm-d-router-gateway or llm-d-router-standalone charts, it calls this same chart under the hood. Whichever one you use, add your configuration as shown in [Configuration](#Configuration)
 
-### 2. — Grant the EPP permission in the handler namespace
+### 2. Grant the EPP permission in the handler namespace
 
 The EPP's SA starts with nothing here. Verify that first, so you can tell the
 grant actually did something:
