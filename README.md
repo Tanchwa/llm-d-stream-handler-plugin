@@ -1,11 +1,10 @@
 # llm-d-stream-handler-plugin
 
-An out-of-tree [llm-d](https://llm-d.ai) EPP plugin that provisions an RTSP
+/n out-of-tree [llm-d](https://llm-d.ai) EPP plugin that provisions an RTSP
 stream handler Job once the router has chosen the inference endpoint a session
 will use, and reaps it when the session ends.
 
-It is the "gateway hook (not in this repo)" that
-[`droidcam-rtsp-ingestor`](https://github.com/Tanchwa/droidcam-rtsp-ingestor)
+It is the "gateway hook (not in this repo)" that [`droidcam-rtsp-ingestor`](https://github.com/Tanchwa/droidcam-rtsp-ingestor)
 describes but does not implement.
 
 ```
@@ -206,68 +205,15 @@ the legitimate destinations are arbitrary user LAN addresses and cannot be
 enumerated in advance. If you need real egress control, pair it with a
 NetworkPolicy on the handler pods.
 
-## Installation runbook
+## Installation
 
-Installing this means three changes: the EPP runs a **different image**, its
-**config gains a plugin block**, and its ServiceAccount gains **permission in the
-handler namespace**. Get any one of them wrong and the failure is silent — the
-EPP serves traffic normally and simply never provisions a handler.
+**note** this instalation is currently based off the stream handler in [tanchwa/droidcam-rtsp-ingestor](https://github.com/tanchwa/droidcam-rtsp-ingestor) as a POC for getting the llm-d hook working.
+Eventually, I will be trying to incorperate this with my company's existing stream handler.
 
-Values below are the ones verified against the `test-single` cluster. Replace
-them for other environments; step 0 tells you how to find each one.
+### 0. Build the plugin image
 
-> **If ArgoCD manages your EPP, do not use `kubectl` for steps 2 and 3.**
-> In test-single the `llm-d-quickstart` and `cellphone-cam` Applications both run
-> `selfHeal: true`, so a `kubectl set image` or `kubectl edit cm` is reverted on
-> the next sync — usually within minutes, and with no error to tell you why the
-> plugin stopped loading. Every change below goes through Git.
-
-### Step 0 — Gather the five facts you need
-
-```bash
-export KUBECONFIG=~/.kube/test-single.config
-LLMD_NS=llm-d-quickstart          # namespace the EPP runs in
-EPP=llm-d-quickstart-epp          # EPP Deployment name
-
-# 1. the EPP ServiceAccount -- the identity that needs RBAC
-kubectl -n $LLMD_NS get deploy $EPP \
-  -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}'
-
-# 2. the config file it loads, and 3. its current image
-kubectl -n $LLMD_NS get deploy $EPP -o jsonpath='{.spec.template.spec.containers[0].args}{"\n"}'
-kubectl -n $LLMD_NS get deploy $EPP -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
-
-# 4. the scheduling profile names -- decodeProfile must match one of these
-kubectl -n $LLMD_NS get cm $EPP -o jsonpath='{.data}' | grep -A3 schedulingProfiles
-
-# 5. is any of it GitOps-managed?
-kubectl -n $LLMD_NS get deploy $EPP \
-  -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"}'
-```
-
-For test-single that yields: SA `llm-d-quickstart-epp`, config
-`/config/optimized-baseline-plugins.yaml`, image
-`ghcr.io/llm-d/llm-d-router-endpoint-picker:main`, **one profile named
-`default`** (no disagg handler), and yes — ArgoCD manages all of it.
-
-That fourth fact matters most. A stock quickstart has no profile called
-`decode`, so setting `decodeProfile: decode` would rely on the plugin's
-primary-profile fallback. It works, but name the profile explicitly so a later
-switch to disagg does not change behaviour silently.
-
-### Step 1 — Build and push the EPP image
-
-```bash
-make image push IMAGE_REPO=docker.io/<you>/llm-d-stream-handler-epp IMAGE_TAG=v0.1.0
-```
-
-Confirm the plugin is compiled in before shipping it anywhere. A registered type
-instantiates; an unregistered one is rejected by name:
-
-```bash
-docker run --rm --entrypoint /epp \
-  docker.io/<you>/llm-d-stream-handler-epp:v0.1.0 --help >/dev/null && echo "binary ok"
-```
+### 1. Deploy the EPP with this plugin config
+EPP Plugins and config are exposed in llm-d's routerlib [values.yaml](https://github.com/llm-d/llm-d-router/blob/main/config/charts/routerlib/values.yaml). Although you will have to call the chart through either the llm-d-router-gateway or llm-d-router-standalone charts, it calls this same chart under the hood. Whichever one you use, add your configuration as shown in [Configuration](#Configuration)
 
 ### Step 2 — Grant the EPP permission in the handler namespace
 
@@ -276,140 +222,22 @@ grant actually did something:
 
 ```bash
 SA=system:serviceaccount:llm-d-quickstart:llm-d-quickstart-epp
-kubectl auth can-i create jobs --as=$SA -n cellphone-cam    # expect: no
+kubectl auth can-i create jobs --as=$SA -n <your job namespace>    # expect: no
 ```
 
-[`deploy/rbac.yaml`](deploy/rbac.yaml) is a RoleBinding only — the Role it
-references is owned by the ingestor repo and synced by the `cellphone-cam`
-ArgoCD Application, so shipping a duplicate here would be drift that ArgoCD
-reverts.
+[`deploy/rbac.yaml`](deploy/rbac.yaml) is a RoleBinding only — the Role it references is in the afformentioned [repo](https://github.com/tanchwa/droidcam-rtsp-ingestor)
 
 **Three namespaces are in play and they mean different things**, which is the
 usual reason this step goes wrong:
 
 | | namespace | what it controls |
 |---|---|---|
-| RoleBinding | `cellphone-cam` | **where the permissions apply** |
-| Role (`roleRef`) | `cellphone-cam` | must resolve in the binding's *own* namespace |
+| RoleBinding | `<your job namespace>` | **where the permissions apply** |
+| Role (`roleRef`) | `<your job namespace>` | must resolve in the binding's *own* namespace |
 | Subject (the EPP's SA) | `llm-d-quickstart` | may be **anywhere** |
 
 The binding goes in the namespace you want to act *on*, not the one the EPP runs
 *in*. That asymmetry is the entire mechanism behind a cross-namespace grant.
-
-Note also that `subjects` is matched **by name string** — no UID, no
-ownerReference, and nothing is written back to the ServiceAccount. A binding
-naming a ServiceAccount that does not exist is perfectly valid and is stored
-without complaint, granting nothing, with no error or event. That is exactly the
-state test-single is in today. Never infer from a binding's existence that it
-works; only `kubectl auth can-i` tells you that.
-
-Because that Application syncs `k8s/` from
-`github.com/tanchwa/droidcam-rtsp-ingestor`, the durable fix is **in that repo**:
-edit `k8s/handler/rbac.yaml` and change the RoleBinding subject from the
-placeholder `llm-d-gateway-hook`/`llm-d` to your real EPP SA. The placeholder
-names a namespace that does not exist in test-single, which is why the binding
-grants nothing today.
-
-Validate before committing, then confirm after the sync:
-
-```bash
-kubectl apply -f deploy/rbac.yaml --dry-run=server     # validates, creates nothing
-
-kubectl auth can-i create jobs    --as=$SA -n cellphone-cam   # now: yes
-kubectl auth can-i delete jobs    --as=$SA -n cellphone-cam   # now: yes
-kubectl auth can-i get configmaps --as=$SA -n cellphone-cam   # now: yes
-kubectl auth can-i create jobs    --as=$SA -n default         # still: no
-```
-
-That last line is not optional. A binding that grants more than one namespace
-means the `roleRef` picked up a ClusterRole by mistake.
-
-### Step 3 — Point the EPP at the new image and config
-
-[`deploy/router-values.yaml`](deploy/router-values.yaml) holds both changes as
-Helm values for the `llm-d-router-gateway` chart. Render it first — this touches
-nothing and catches a moved chart key immediately:
-
-```bash
-helm template llm-d-quickstart \
-  oci://ghcr.io/llm-d/charts/llm-d-router-gateway --version v0 \
-  -f deploy/router-values.yaml | grep -E 'image:|config-file'
-```
-
-You should see your image and `/config/stream-handler-plugins.yaml`.
-
-In test-single the EPP comes from an ArgoCD Application that renders that chart
-with inline values, so **paste the `router.epp` block into the Application's
-`spec.sources[].helm.values`** and commit. Do not `kubectl edit` the ConfigMap;
-`selfHeal` will undo it.
-
-Without ArgoCD, pass the file to Helm directly:
-
-```bash
-helm upgrade llm-d-quickstart oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
-  --version v0 -n llm-d-quickstart --reuse-values -f deploy/router-values.yaml
-```
-
-### Step 4 — Roll out and confirm the plugin loaded
-
-The EPP reads its config once at startup, so a ConfigMap change alone does
-nothing until the pod restarts.
-
-```bash
-kubectl -n $LLMD_NS rollout restart deploy/$EPP
-kubectl -n $LLMD_NS rollout status  deploy/$EPP --timeout=180s
-kubectl -n $LLMD_NS get deploy $EPP -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
-```
-
-A missing or misspelled plugin type is a **hard startup failure**, not a warning,
-so a pod that reaches Ready has loaded the plugin:
-
-```bash
-kubectl -n $LLMD_NS logs deploy/$EPP | grep -i "stream-handler\|not registered\|Failed to parse configuration"
-```
-
-`plugin type '...' is not registered` means the image does not contain the
-plugin — step 1 or step 3 landed wrong.
-
-### Step 5 — Smoke-test a session
-
-Start a session from the frontend, then watch for the Job. The plugin only acts
-on requests carrying `x-llmd-frame-source: frontend-trigger`, so ordinary traffic
-proves nothing here.
-
-```bash
-kubectl -n cellphone-cam get jobs -l app.kubernetes.io/name=cellphone-camera-handler -w
-```
-
-When one appears, check that the **scheduled** endpoint was injected — this is
-the whole point of the plugin:
-
-```bash
-SESSION=<session-id>
-POD=$(kubectl -n cellphone-cam get pod -l cellphone-camera.io/session-id=$SESSION -o name | head -1)
-kubectl -n cellphone-cam get $POD \
-  -o jsonpath='{range .spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}'
-```
-
-`POOL_ENDPOINT` must be a real decode pod IP and port. Cross-check it against the
-pick the EPP logged for that request id. Then hit **Stop** and confirm the Job is
-deleted rather than lingering to its 300s backstop:
-
-```bash
-kubectl -n cellphone-cam get jobs -l cellphone-camera.io/session-id=$SESSION
-```
-
-### Rollback
-
-Revert the Git commit from step 3 and let ArgoCD sync, or:
-
-```bash
-helm rollback llm-d-quickstart -n llm-d-quickstart
-kubectl -n cellphone-cam delete rolebinding llm-d-epp-handler-provisioner
-```
-
-Dropping the RoleBinding alone is a useful half-measure: the plugin stays loaded
-but every provision fails with a logged RBAC error, leaving routing untouched.
 
 ### Troubleshooting
 
