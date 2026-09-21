@@ -18,18 +18,8 @@ browser ──ws──► frontend ──trigger POST──► llm-d gateway ─
                                    frames ─────────┘──► the assigned endpoint
 ```
 
-## Where it hooks in, and why not where you would expect
-
-The obvious target is the disagg profile handler's `pickDecodeFirst` — that is
-where the decode endpoint is chosen. It is the wrong seam twice over:
-
-- it lives inside `pkg/epp/framework/plugins/scheduling/.../disagg`, so using it
-  means **forking llm-d-router**; and
-- `Pick()` is re-entered once per stage (decode → encode → prefill) until it
-  returns an empty map, so a side effect there fires at ambiguous times and can
-  fire more than once per request.
-
-This plugin instead uses two supported request-control extension points, and
+## Where it hooks in
+This plugin uses two supported request-control extension points, and
 forks nothing:
 
 | hook | when | what it does |
@@ -51,14 +41,15 @@ moves. See [Version pin](#version-pin).
 
 The handler posts every frame as `[{text: prompt}, {image_url: frame}]`. The
 text is identical on every request, so it is a **constant prefix** that vLLM's
-automatic prefix cache prefills once and reuses from frame two onward. The
-images change and must be re-encoded every time; that cost is irreducible. The
-text is free after the first request.
-
+automatic prefix cache prefills once and reuses from frame two onward.
 That reuse only survives if frames keep landing on the **same pod**, which is
 exactly what pinning `POOL_ENDPOINT` to the scheduled endpoint guarantees.
 Re-scheduling per frame would scatter across pods and cold-miss the prefix every
 hop.
+
+**Human's note:** I will explore more detailed caching for frames and further implementation of disagg later, see the [Not done here](#not-done-here) section. 
+but the current design for this POC is to handle inference of real time streams, 
+and the assumption is that only text is constant.
 
 Note this is *vLLM's own on-pod cache*, not llm-d's `prefix-cache-scorer` or
 `mm-embeddings-cache-scorer`. Those act on gateway scheduling decisions, and the
@@ -78,6 +69,13 @@ lookup and provisions nothing:
 That last row includes the handler's own frame submissions
 (`cellphone-camera-handler`), which is what stops a session from provisioning a
 second handler for itself.
+
+**Human's note:** This is actually an artifact of when I was first designing this 
+with Claud. Claude initially assumed I wanted to go through the gateway for every frame,
+but now the design pins the handler to the scheduled endpoint and bypasses the gateway entirely.
+This technically makes the above statement currently impossible, 
+but I left in the safety guard for when we do impliment in the future.
+See the [Not done here](#not-done-here) section for more details.
 
 A trigger carries its session id and camera URL in headers, falling back to the
 request body's `cellphone-camera` object when a gateway strips unknown headers.
@@ -131,6 +129,13 @@ are set to. A callback that fails any of this fails the trigger with a 400
 rather than quietly falling back to the configured base: sending a caller's
 results somewhere it did not ask for is worse than telling it the header was
 wrong.
+
+**Human's note:** Eventually, this is going to move to a version where callers will
+*almost* always be outside the cluster.
+The allowlist and callback url header are compromises for now, 
+and the long term plan is to have a more robust solution, 
+possibly with a more robust authentication mechanism, sticky sessions
+proxied through the gateway, or a more robust callback mechanism.
 
 ## Template rendering is injection-safe by construction
 
