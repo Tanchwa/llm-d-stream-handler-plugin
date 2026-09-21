@@ -245,7 +245,7 @@ The binding goes in the namespace you want to act *on*, not the one the EPP runs
 |---|---|
 | EPP pod crash-loops with `plugin type '...' is not registered` | image does not contain the plugin, or the type name is misspelled in the config |
 | EPP healthy, no Job ever created, nothing in logs | requests are not carrying `x-llmd-frame-source: frontend-trigger` — the plugin ignores everything else by design |
-| `no target endpoint for profile "decode"` in logs | `decodeProfile` names a profile that does not exist; check step 0, fact 4 |
+| `no target endpoint for profile "decode"` in logs | `decodeProfile` names a profile that does not exist |
 | `jobs.batch is forbidden` in logs | step 2 RBAC missing, or the RoleBinding is in the wrong namespace |
 | Jobs created but never deleted | `sessionLabel` does not match the label the job template stamps |
 | Everything works, then stops after a few minutes | ArgoCD `selfHeal` reverted a `kubectl` change — redo it in Git |
@@ -256,17 +256,6 @@ The binding goes in the namespace you want to act *on*, not the one the EPP runs
 
 This module pins `github.com/llm-d/llm-d-router v0.9.0`, matching the version the
 llm-d umbrella repo references.
-
-**The EPP image running in test-single is
-`ghcr.io/llm-d/llm-d-router-endpoint-picker:main`**, which is newer. That is not
-a conflict — this repo ships its own EPP binary, so the pin only decides which
-router version *this* binary embeds — but moving the pin to `main` would buy
-back three things v0.9.0 lacks:
-
-- `PreRequest` returning an `error`, so provisioning failures fail the request
-- `Response.TerminationCause` and `StreamedEvents`, enough to tell a truncated
-  stream from a completed one
-- plugin stability levels on `Register`
 
 ## Testing
 
