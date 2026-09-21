@@ -174,16 +174,39 @@ func (p *Plugin) PreRequest(ctx context.Context, request *fwksched.InferenceRequ
 		PoolEndpoint:  poolEndpoint,
 		Prompt:        trigger.Prompt,
 		FrameInterval: trigger.FrameInterval,
-	} if p.params.ResultSinkBaseURL != "" {
-		assignment.ResultSinkURL = p.params.ResultSinkBaseURL + "/" + trigger.SessionID
 	}
+
+	assignment.ResultsCallbackURL = p.resultsCallbackURL(trigger)
 
 	if err := p.provisioner.Acquire(ctx, assignment); err != nil {
 		logger.Error(err, "Failed to provision stream handler; this session will receive no frames")
 		return
 	}
 	logger.Info("Provisioned stream handler",
-		"poolEndpoint", poolEndpoint, "streamURL", assignment.StreamURL)
+		"poolEndpoint", poolEndpoint, "streamURL", assignment.StreamURL,
+		"resultsCallback", assignment.ResultsCallbackURL)
+}
+
+// resultsCallbackURL is where this session's inference output should be delivered.
+//
+// The caller's own callback wins over the configured one. The frontend runs more
+// than one replica and each session's browser socket lives in exactly one of
+// them, so the configured Service URL would load-balance results to a replica
+// that knows nothing about the session. Only the caller can name the replica
+// that is actually holding the socket, which is why it gets to.
+//
+// The configured base remains the fallback for a caller that names no callback --
+// a curl-driven test, or a frontend behind a single replica. Empty means no
+// callback at all, and the rendered Job simply drops the env entry.
+func (p *Plugin) resultsCallbackURL(trigger sessionRequest) string {
+	base := trigger.ResultsCallback
+	if base == "" {
+		base = p.params.ResultsCallbackBaseURL
+	}
+	if base == "" {
+		return ""
+	}
+	return base + "/" + trigger.SessionID
 }
 
 // decodeEndpoint turns the scheduling result into the base URL the handler will

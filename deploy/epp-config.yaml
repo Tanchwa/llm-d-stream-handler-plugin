@@ -46,8 +46,28 @@ plugins:
 
       # Where the handler forwards the inference server's response so it reaches
       # the browser. The session id is appended, giving the handler a
-      # RESULT_SINK_URL of <base>/<session-id>. Omit to inject nothing.
-      resultSinkBaseURL: http://cellphone-camera-frontend.cellphone-cam.svc.cluster.local:8080/ingest
+      # RESULTS_CALLBACK_URL of <base>/<session-id>.
+      #
+      # This is only the FALLBACK. A trigger that carries
+      # x-cellphone-camera-results-callback overrides it, and the frontend sends
+      # that header with its own pod address -- because the frontend runs more
+      # than one replica and each session's browser socket lives in exactly one
+      # of them. Results sent to the Service URL below would be load-balanced to
+      # a replica that has never heard of the session. Keep it set anyway: it is
+      # what a caller sending no header falls back to. Omit to inject nothing.
+      resultsCallbackBaseURL: http://cellphone-camera-frontend.cellphone-cam.svc.cluster.local:8080/ingest
+
+      # Header the trigger names its own callback in. Defaults to this value.
+      resultsCallbackHeader: x-cellphone-camera-results-callback
+
+      # Bounds on where a caller-supplied callback may point -- without these,
+      # anything that can reach the gateway could choose where a handler sends
+      # inference output. The defaults below cover the ranges a pod IP comes
+      # from plus cluster Service DNS, which is everything this system needs.
+      # Loopback, link-local (cloud instance metadata) and the unspecified
+      # address are refused whatever you put here.
+      allowedResultsCallbackCIDRs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, "fc00::/7"]
+      allowedResultsCallbackDomains: [svc.cluster.local]
 
       # A camera address is typed into a browser field and becomes an outbound
       # connection from inside the cluster. Keep this list as narrow as the

@@ -65,6 +65,10 @@ spec:
               value: "${STREAM_URL}"
             - name: POOL_ENDPOINT
               value: "${POOL_ENDPOINT}"
+            # The return path: without this the handler has nowhere to send
+            # the model's output and the session produces nothing visible.
+            - name: RESULTS_CALLBACK_URL
+              value: "${RESULTS_CALLBACK_URL}"
             # Omit these two entirely if the user did not override them.
             - name: PROMPT
               value: "${PROMPT}"

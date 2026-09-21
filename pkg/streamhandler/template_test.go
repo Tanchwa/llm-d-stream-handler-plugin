@@ -39,12 +39,12 @@ func envOf(t *testing.T, job *batchv1.Job) map[string]string {
 
 func fullAssignment() Assignment {
 	return Assignment{
-		SessionID:     "cellphone-camera-abc123",
-		StreamURL:     "http://192.168.1.42:4747/video",
-		PoolEndpoint:  "http://10.1.2.3:8000",
-		Prompt:        "What is happening?",
-		FrameInterval: "1.5",
-		ResultSinkURL: "http://frontend/ingest/cellphone-camera-abc123",
+		SessionID:          "cellphone-camera-abc123",
+		StreamURL:          "http://192.168.1.42:4747/video",
+		PoolEndpoint:       "http://10.1.2.3:8000",
+		Prompt:             "What is happening?",
+		FrameInterval:      "1.5",
+		ResultsCallbackURL: "http://frontend/ingest/cellphone-camera-abc123",
 	}
 }
 
@@ -67,12 +67,12 @@ func TestRenderJobFillsRequiredFields(t *testing.T) {
 
 	env := envOf(t, job)
 	for name, want := range map[string]string{
-		"SESSION_ID":      "cellphone-camera-abc123",
-		"STREAM_URL":      "http://192.168.1.42:4747/video",
-		"POOL_ENDPOINT":   "http://10.1.2.3:8000",
-		"PROMPT":          "What is happening?",
-		"FRAME_INTERVAL":  "1.5",
-		"RESULT_SINK_URL": "http://frontend/ingest/cellphone-camera-abc123",
+		"SESSION_ID":           "cellphone-camera-abc123",
+		"STREAM_URL":           "http://192.168.1.42:4747/video",
+		"POOL_ENDPOINT":        "http://10.1.2.3:8000",
+		"PROMPT":               "What is happening?",
+		"FRAME_INTERVAL":       "1.5",
+		"RESULTS_CALLBACK_URL": "http://frontend/ingest/cellphone-camera-abc123",
 	} {
 		if env[name] != want {
 			t.Errorf("env %s = %q, want %q", name, env[name], want)
@@ -101,7 +101,7 @@ func TestRenderJobDropsUnsetOptionalEnv(t *testing.T) {
 	a := fullAssignment()
 	a.Prompt = ""
 	a.FrameInterval = ""
-	a.ResultSinkURL = ""
+	a.ResultsCallbackURL = ""
 
 	job, err := renderJob([]byte(jobTemplate), a, "cellphone-camera")
 	if err != nil {
@@ -109,7 +109,7 @@ func TestRenderJobDropsUnsetOptionalEnv(t *testing.T) {
 	}
 
 	env := envOf(t, job)
-	for _, name := range []string{"PROMPT", "FRAME_INTERVAL", "RESULT_SINK_URL"} {
+	for _, name := range []string{"PROMPT", "FRAME_INTERVAL", "RESULTS_CALLBACK_URL"} {
 		if v, present := env[name]; present {
 			t.Errorf("env %s is present with value %q, want the entry dropped entirely", name, v)
 		}

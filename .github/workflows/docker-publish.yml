@@ -27,7 +27,7 @@ jobs:
       matrix:
         include:
           - component: .
-            image: endpoint-picker-with-plugin
+            image: llm-d-epp-with-stream-handler-plugin
 
     steps:
       - name: Checkout

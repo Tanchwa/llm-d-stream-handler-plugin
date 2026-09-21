@@ -90,12 +90,11 @@ func TestRenderRealClusterTemplate(t *testing.T) {
 	}
 }
 
-// The real template ships no RESULT_SINK_URL entry yet. Until the ingestor repo
-// adds one, a configured result sink is computed and then silently dropped at
-// render time. Pinning that here means the day the template gains the entry,
-// this test starts failing and says so out loud rather than the behaviour
-// changing unnoticed.
-func TestRealTemplateHasNoResultSinkEntryYet(t *testing.T) {
+// The return path, asserted against the template actually captured from the
+// cluster rather than a hand-written one. An entry missing here means handler
+// pods run and produce nothing a browser can see, which is invisible from the
+// plugin's side -- provisioning still succeeds.
+func TestRealTemplateCarriesResultsCallback(t *testing.T) {
 	raw, err := os.ReadFile("testdata/job-template.yaml")
 	if err != nil {
 		t.Fatalf("reading the captured template: %v", err)
@@ -104,7 +103,11 @@ func TestRealTemplateHasNoResultSinkEntryYet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderJob: %v", err)
 	}
-	if _, present := envOf(t, job)["RESULT_SINK_URL"]; present {
-		t.Skip("the template now carries RESULT_SINK_URL; drop this test and assert the value instead")
+	got, present := envOf(t, job)["RESULTS_CALLBACK_URL"]
+	if !present {
+		t.Fatal("the captured template has no RESULTS_CALLBACK_URL entry, so results never reach the caller; re-capture it from the cluster after applying the ingestor's job template")
+	}
+	if want := fullAssignment().ResultsCallbackURL; got != want {
+		t.Errorf("RESULTS_CALLBACK_URL = %q, want %q", got, want)
 	}
 }

@@ -21,7 +21,7 @@ package streamhandler
 // each field as an environment variable and talks to no Kubernetes API of its own.
 //
 // SessionID, StreamURL and PoolEndpoint are mandatory. Prompt, FrameInterval and
-// ResultSinkURL are optional, and an empty value means "unset" rather than "empty
+// ResultsCallbackURL are optional, and an empty value means "unset" rather than "empty
 // string" -- the renderer drops the env entry entirely so the handler falls
 // through to the cellphone-camera-handler-defaults ConfigMap via envFrom. Passing
 // an empty FrameInterval through instead of dropping it would crash the handler on
@@ -44,10 +44,10 @@ type Assignment struct {
 	// FrameInterval optionally overrides the handler's sampling interval, in
 	// seconds, carried as a string because it is written straight into an env var.
 	FrameInterval string
-	// ResultSinkURL is where the handler forwards the inference server's response
-	// bytes so they reach the frontend. Empty when no sink is configured, in which
+	// ResultsCallbackURL is where the handler forwards the inference server's response
+	// bytes so they reach the frontend. Empty when no callback is configured, in which
 	// case the handler falls back to its own default behaviour.
-	ResultSinkURL string
+	ResultsCallbackURL string
 }
 
 // placeholders maps the template's ${...} tokens to this assignment's values.
@@ -55,11 +55,11 @@ type Assignment struct {
 // unresolved by the renderer.
 func (a Assignment) placeholders() map[string]string {
 	return map[string]string{
-		"SESSION_ID":      a.SessionID,
-		"STREAM_URL":      a.StreamURL,
-		"POOL_ENDPOINT":   a.PoolEndpoint,
-		"PROMPT":          a.Prompt,
-		"FRAME_INTERVAL":  a.FrameInterval,
-		"RESULT_SINK_URL": a.ResultSinkURL,
+		"SESSION_ID":           a.SessionID,
+		"STREAM_URL":           a.StreamURL,
+		"POOL_ENDPOINT":        a.PoolEndpoint,
+		"PROMPT":               a.Prompt,
+		"FRAME_INTERVAL":       a.FrameInterval,
+		"RESULTS_CALLBACK_URL": a.ResultsCallbackURL,
 	}
 }

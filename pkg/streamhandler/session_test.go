@@ -193,3 +193,92 @@ func TestNumberField(t *testing.T) {
 		t.Errorf("numberField(nil) = %q, want empty", got)
 	}
 }
+
+// The caller's own callback is the whole point of the header: it is the only
+// party that knows which frontend replica holds this session's browser socket.
+func TestParseTriggerReadsCallerCallback(t *testing.T) {
+	p := testParams(t)
+	got, err := p.parseTrigger(map[string]string{
+		"x-llmd-session-id":                   "cellphone-camera-abc123",
+		"x-cellphone-camera-stream-url":       "http://192.168.1.42:4747/video",
+		"x-cellphone-camera-results-callback": "http://10.42.1.7:8080/ingest/",
+	}, nil)
+	if err != nil {
+		t.Fatalf("parseTrigger: %v", err)
+	}
+	// The trailing slash is trimmed here so appending the session id later
+	// cannot produce a doubled separator.
+	if got.ResultsCallback != "http://10.42.1.7:8080/ingest" {
+		t.Errorf("ResultsCallback = %q, want the pod URL with its trailing slash trimmed", got.ResultsCallback)
+	}
+}
+
+func TestParseTriggerReadsCallbackFromBody(t *testing.T) {
+	p := testParams(t)
+	payload := fwkrh.PayloadMap{
+		"session_id": "cellphone-camera-abc123",
+		"cellphone-camera": map[string]any{
+			"stream_url":       "http://192.168.1.42:4747/video",
+			"results_callback": "http://10.42.1.7:8080/ingest",
+		},
+	}
+	got, err := p.parseTrigger(map[string]string{}, payload)
+	if err != nil {
+		t.Fatalf("parseTrigger: %v", err)
+	}
+	if got.ResultsCallback != "http://10.42.1.7:8080/ingest" {
+		t.Errorf("ResultsCallback = %q, want the body value", got.ResultsCallback)
+	}
+}
+
+// A rejected callback has to fail the trigger rather than fall back to the
+// configured one: silently sending a caller's results somewhere it did not ask
+// for is worse than telling it the header was wrong.
+func TestParseTriggerRejectsUnsafeCallbacks(t *testing.T) {
+	tests := map[string]struct {
+		callback string
+		wantText string
+	}{
+		"cloud metadata":   {"http://169.254.169.254/latest/meta-data", "never allowed"},
+		"loopback":         {"http://127.0.0.1:8080/ingest", "never allowed"},
+		"public internet":  {"http://93.184.216.34/collect", "outside allowedResultsCallbackCIDRs"},
+		"external domain":  {"https://evil.example.com/collect", "outside allowedResultsCallbackDomains"},
+		"wrong scheme":     {"file:///etc/passwd", "scheme"},
+		"carries creds":    {"http://user:pw@10.42.1.7:8080/ingest", "must not carry credentials"},
+		"carries a query":  {"http://10.42.1.7:8080/ingest?tenant=a", "plain base URL"},
+		"carries fragment": {"http://10.42.1.7:8080/ingest#frag", "plain base URL"},
+	}
+	p := testParams(t)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := p.parseTrigger(map[string]string{
+				"x-llmd-session-id":                   "cellphone-camera-abc123",
+				"x-cellphone-camera-stream-url":       "http://192.168.1.42:4747/video",
+				"x-cellphone-camera-results-callback": tc.callback,
+			}, nil)
+			if err == nil {
+				t.Fatalf("parseTrigger accepted %q, want an error mentioning %q", tc.callback, tc.wantText)
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantText)
+			}
+		})
+	}
+}
+
+// Cluster Service DNS has to keep working: it is what a single-replica frontend
+// and the configured fallback both look like.
+func TestParseTriggerAcceptsClusterServiceDNS(t *testing.T) {
+	p := testParams(t)
+	got, err := p.parseTrigger(map[string]string{
+		"x-llmd-session-id":                   "cellphone-camera-abc123",
+		"x-cellphone-camera-stream-url":       "http://192.168.1.42:4747/video",
+		"x-cellphone-camera-results-callback": "http://frontend.cellphone-cam.svc.cluster.local:8080/ingest",
+	}, nil)
+	if err != nil {
+		t.Fatalf("parseTrigger rejected a cluster Service URL: %v", err)
+	}
+	if got.ResultsCallback == "" {
+		t.Error("ResultsCallback is empty, want the Service URL")
+	}
+}

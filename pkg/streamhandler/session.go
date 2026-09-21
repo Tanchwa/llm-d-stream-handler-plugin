@@ -19,6 +19,7 @@ package streamhandler
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -49,6 +50,10 @@ type sessionRequest struct {
 	StreamURL     string
 	Prompt        string
 	FrameInterval string
+	// ResultsCallback is where this caller wants the session's inference output
+	// delivered, as a base URL with no session id. Empty means the caller named
+	// no callback and the configured resultsCallbackBaseURL applies instead.
+	ResultsCallback string
 }
 
 // parseTrigger extracts and validates a provisioning request. Headers win over
@@ -87,6 +92,20 @@ func (p *Parameters) parseTrigger(headers map[string]string, payload fwkrh.Reque
 	}
 
 	req := sessionRequest{SessionID: sessionID, StreamURL: streamURL}
+
+	// The caller names its own callback because it is the only party that knows
+	// which of its replicas holds the browser socket for this session.
+	resultsCallback := strings.TrimSpace(headers[p.ResultsCallbackHeader])
+	if resultsCallback == "" {
+		resultsCallback = strings.TrimSpace(stringField(camera, "results_callback"))
+	}
+	if resultsCallback != "" {
+		resultsCallback = strings.TrimRight(resultsCallback, "/")
+		if err := p.validateResultsCallbackURL(resultsCallback); err != nil {
+			return sessionRequest{}, err
+		}
+		req.ResultsCallback = resultsCallback
+	}
 
 	req.Prompt = stringField(camera, "prompt")
 	req.FrameInterval = numberField(camera, "interval")
@@ -145,6 +164,65 @@ func (p *Parameters) validateStreamURL(raw string) error {
 		return fmt.Errorf("stream URL %q has no host", raw)
 	}
 	return nil
+}
+
+// validateResultsCallbackURL confirms a caller-supplied results callback is somewhere we
+// are willing to point a handler pod at.
+//
+// This is a stricter check than the one above, and deliberately so. A camera
+// address is arbitrary user LAN and cannot be enumerated in advance, so all a
+// scheme allowlist can do there is rule out the absurd. A results callback is the
+// opposite: the only legitimate destinations are frontend pods inside this
+// cluster, which means an address allowlist is both writable and worth writing.
+// Left unchecked, this header would let anything that can reach the gateway
+// choose where a handler sends inference output.
+//
+// The session id is appended to whatever survives this, so a base URL carrying
+// a query or a fragment is refused rather than silently mangled into
+// "http://host/ingest?x=1/session-id".
+func (p *Parameters) validateResultsCallbackURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("results callback is not a valid URL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("results callback scheme %q is not allowed, want http or https", u.Scheme)
+	}
+	if u.User != nil {
+		return fmt.Errorf("results callback %q must not carry credentials", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("results callback %q must be a plain base URL: the session id is appended to it, so a query or fragment cannot be honoured", raw)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("results callback %q has no host", raw)
+	}
+
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		// Refused ahead of the allowlist so a deployment that widens the CIDRs
+		// cannot accidentally expose the instance metadata service on
+		// 169.254.169.254, or reach back into the handler pod itself.
+		if addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsUnspecified() {
+			return fmt.Errorf("results callback address %s is never allowed (loopback, link-local or unspecified)", addr)
+		}
+		for _, n := range p.resultsCallbackNets {
+			if n.Contains(addr) {
+				return nil
+			}
+		}
+		return fmt.Errorf("results callback address %s is outside allowedResultsCallbackCIDRs (%s)", addr, strings.Join(p.AllowedResultsCallbackCIDRs, ", "))
+	}
+
+	name := strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, d := range p.AllowedResultsCallbackDomains {
+		if name == d || strings.HasSuffix(name, "."+d) {
+			return nil
+		}
+	}
+	return fmt.Errorf("results callback host %q is outside allowedResultsCallbackDomains (%s)", host, strings.Join(p.AllowedResultsCallbackDomains, ", "))
 }
 
 // stringField reads a string out of a decoded JSON object, tolerating a missing

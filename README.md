@@ -88,7 +88,7 @@ Headers win. What lands on the handler pod:
 | `SESSION_ID` | `x-llmd-session-id`, or body `session_id` |
 | `STREAM_URL` | `x-cellphone-camera-stream-url`, or body `cellphone-camera.stream_url` |
 | `POOL_ENDPOINT` | **the endpoint llm-d scheduled**, as `http://<address>:<port>` |
-| `RESULT_SINK_URL` | `resultSinkBaseURL` + `/` + session id |
+| `RESULTS_CALLBACK_URL` | `x-cellphone-camera-results-callback`, else `resultsCallbackBaseURL`; the session id is appended either way |
 | `PROMPT`, `FRAME_INTERVAL` | optional; **the env entry is dropped when unset** |
 
 Dropping rather than blanking the optional pair is required, not cosmetic. They
@@ -96,9 +96,41 @@ are overrides layered on an `envFrom` ConfigMap of defaults: a blank `PROMPT`
 would override the default with nothing, and a blank `FRAME_INTERVAL` crashes the
 handler on `float("")`.
 
-`RESULT_SINK_URL` has no corresponding entry in the ingestor's job template yet,
-so today it is computed and then dropped at render time. See
-[Not done here](#not-done-here).
+## Results go back to the caller that asked for them
+
+`RESULTS_CALLBACK_URL` is how a session's inference output reaches the browser.
+The handler posts frames straight to the assigned pod, bypassing Envoy, so
+nothing in llm-d ever observes them — and an ext_proc filter cannot splice one
+request's response into another's stream. The callback is the return path, and
+it is the only one there is.
+
+**The caller names it, and that beats the configured base.** The frontend runs
+two replicas and each session's WebSocket lives entirely in one pod's memory, so
+results sent to the frontend *Service* would be load-balanced to a replica that
+has never heard of the session. Only the caller knows which pod is holding the
+socket, so the trigger carries its own address in
+`x-cellphone-camera-results-callback` (or body `cellphone-camera.results_callback`)
+and the plugin appends the session id to it.
+
+`resultsCallbackBaseURL` stays as the fallback for a caller that names nothing —
+a `curl`-driven test, or a frontend behind a single replica. With neither set,
+no env entry is injected at all and the handler falls through to its own
+defaults.
+
+**A caller-supplied callback is checked against an allowlist.** This is stricter
+than the camera-URL check above, and deliberately so: a camera address is
+arbitrary user LAN and cannot be enumerated, but the only legitimate callbacks
+are frontend pods inside this cluster. Left unchecked, the header would let
+anything that can reach the gateway choose where a handler sends inference
+output. A callback must be `http`/`https`, carry no credentials, carry no query
+or fragment (the session id is appended to it), and resolve to either an address
+inside `allowedResultsCallbackCIDRs` or a name under
+`allowedResultsCallbackDomains`. Loopback, link-local — which is where cloud
+instance metadata lives — and the unspecified address are refused whatever those
+are set to. A callback that fails any of this fails the trigger with a 400
+rather than quietly falling back to the configured base: sending a caller's
+results somewhere it did not ask for is worse than telling it the header was
+wrong.
 
 ## Template rendering is injection-safe by construction
 
@@ -135,7 +167,7 @@ See [`deploy/epp-config.yaml`](deploy/epp-config.yaml) for a complete
     namespace: cellphone-cam
     jobTemplateConfigMap: cellphone-camera-handler-job-template
     decodeProfile: decode
-    resultSinkBaseURL: http://cellphone-camera-frontend.cellphone-cam.svc.cluster.local:8080/ingest
+    resultsCallbackBaseURL: http://cellphone-camera-frontend.cellphone-cam.svc.cluster.local:8080/ingest
     allowedStreamSchemes: [http, https, rtsp]
 ```
 
@@ -145,7 +177,10 @@ See [`deploy/epp-config.yaml`](deploy/epp-config.yaml) for a complete
 | `jobTemplateConfigMap` | *required* | ConfigMap holding the Job template |
 | `jobTemplateKey` | `job.yaml` | key within it |
 | `decodeProfile` | `decode` | **falls back to the result's primary profile** |
-| `resultSinkBaseURL` | *(none)* | omit to inject no `RESULT_SINK_URL` |
+| `resultsCallbackBaseURL` | *(none)* | **fallback only**; a caller's own callback header wins |
+| `resultsCallbackHeader` | `x-cellphone-camera-results-callback` | where the caller names its callback |
+| `allowedResultsCallbackCIDRs` | private + CGNAT + ULA ranges | addresses a caller's callback may resolve to |
+| `allowedResultsCallbackDomains` | `svc.cluster.local` | name suffixes a caller's callback may use |
 | `allowedStreamSchemes` | `http,https,rtsp` | scheme allowlist for camera URLs |
 | `sessionLabel` | `cellphone-camera.io/session-id` | must match the template's label |
 | `templateCacheTTL` | `30s` | `0` disables caching |
@@ -381,7 +416,8 @@ but every provision fails with a logged RBAC error, leaving routing untouched.
 | `jobs.batch is forbidden` in logs | step 2 RBAC missing, or the RoleBinding is in the wrong namespace |
 | Jobs created but never deleted | `sessionLabel` does not match the label the job template stamps |
 | Everything works, then stops after a few minutes | ArgoCD `selfHeal` reverted a `kubectl` change — redo it in Git |
-| Handler pod runs but produces nothing | expected today: the ingestor's template has no `RESULT_SINK_URL` entry yet (see [Not done here](#not-done-here)) |
+| Handler pod runs but produces nothing | check the Job's `RESULTS_CALLBACK_URL`: `kubectl -n cellphone-cam get job -l cellphone-camera.io/session-id=<id> -o jsonpath='{.items[0].spec.template.spec.containers[0].env}'`. Absent means the template has no `${RESULTS_CALLBACK_URL}` entry, or neither the caller nor `resultsCallbackBaseURL` named one |
+| Trigger returns 400 mentioning a callback | the caller's `x-cellphone-camera-results-callback` is outside the allowlist; widen `allowedResultsCallbackCIDRs`/`allowedResultsCallbackDomains` or fix the caller |
 
 ### Version pin
 
@@ -422,21 +458,6 @@ kubectl -n cellphone-cam get cm cellphone-camera-handler-job-template \
 ```
 
 ## Not done here
-
-**The token path needs a change in the ingestor repo.** The handler posts frames
-straight to the assigned pod, bypassing Envoy, so nothing in llm-d ever observes
-them — and there is no response multiplexing anywhere in `pkg/epp`, because an
-Envoy ext_proc cannot splice one request's response into another's. The
-ingestor README's "the gateway joins the output onto the caller's open stream"
-therefore has no implementation and cannot be built as an EPP plugin. The fix is
-for the handler to pipe the inference server's SSE bytes to the frontend at the
-`RESULT_SINK_URL` this plugin already injects, which requires:
-
-- `handler/.../pool.py` — forward the response instead of draining and discarding
-- `handler/.../config.py` — read `RESULT_SINK_URL`
-- `frontend/.../server.py` — accept `POST /ingest/{session_id}`
-- `frontend/.../gateway.py` — send the `frontend-stop` trigger on WebSocket close
-- `k8s/handler/configmap-job-template.yaml` — add a `${RESULT_SINK_URL}` entry
 
 **Pre-warmed handler pooling.** `Provisioner` exists so this stays additive: a
 pooled implementation would `Acquire` a lease and `Release` it back. It is not

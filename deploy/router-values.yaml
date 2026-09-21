@@ -23,7 +23,7 @@ router:
     # The EPP built from this repo: stock llm-d plus one plugin registration.
     image:
       registry: docker.io/tanchwa
-      repository: llm-d-stream-handler-epp
+      repository: llm-d-epp-with-stream-handler-plugin
       # Pin a real tag in production; the chart defaults to pullPolicy Always.
       tag: v0.1.0
 
@@ -48,7 +48,10 @@ router:
             # beats relying on the plugin's primary-profile fallback, because a
             # future switch to disagg would otherwise change behaviour silently.
             decodeProfile: default
-            resultSinkBaseURL: http://cellphone-camera-frontend.cellphone-cam.svc.cluster.local:8080/ingest
+            # Fallback only: a trigger carrying
+            # x-cellphone-camera-results-callback overrides this with the
+            # frontend pod that actually holds the session's browser socket.
+            resultsCallbackBaseURL: http://cellphone-camera-frontend.cellphone-cam.svc.cluster.local:8080/ingest
             allowedStreamSchemes: [http, https, rtsp]
         schedulingProfiles:
         - name: default

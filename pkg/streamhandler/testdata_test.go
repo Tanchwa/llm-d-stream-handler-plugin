@@ -64,8 +64,8 @@ spec:
               value: "${STREAM_URL}"
             - name: POOL_ENDPOINT
               value: "${POOL_ENDPOINT}"
-            - name: RESULT_SINK_URL
-              value: "${RESULT_SINK_URL}"
+            - name: RESULTS_CALLBACK_URL
+              value: "${RESULTS_CALLBACK_URL}"
             - name: PROMPT
               value: "${PROMPT}"
             - name: FRAME_INTERVAL
@@ -76,9 +76,9 @@ spec:
 func testParams(t *testing.T) Parameters {
 	t.Helper()
 	p := Parameters{
-		Namespace:            "cellphone-camera",
-		JobTemplateConfigMap: "cellphone-camera-handler-job-template",
-		ResultSinkBaseURL:    "http://frontend.cellphone-camera.svc.cluster.local/ingest",
+		Namespace:              "cellphone-camera",
+		JobTemplateConfigMap:   "cellphone-camera-handler-job-template",
+		ResultsCallbackBaseURL: "http://frontend.cellphone-camera.svc.cluster.local/ingest",
 	}
 	p.applyDefaults()
 	if err := p.validate(); err != nil {

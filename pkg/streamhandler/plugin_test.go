@@ -70,8 +70,8 @@ func TestTriggerProvisionsAgainstDecodePick(t *testing.T) {
 		t.Errorf("StreamURL = %q", got.StreamURL)
 	}
 	want := "http://frontend.cellphone-camera.svc.cluster.local/ingest/cellphone-camera-abc123"
-	if got.ResultSinkURL != want {
-		t.Errorf("ResultSinkURL = %q, want %q", got.ResultSinkURL, want)
+	if got.ResultsCallbackURL != want {
+		t.Errorf("ResultsCallbackURL = %q, want %q", got.ResultsCallbackURL, want)
 	}
 }
 
@@ -289,9 +289,9 @@ func TestNilRequestIsSafe(t *testing.T) {
 	p.PreRequest(context.Background(), nil, nil)
 }
 
-func TestResultSinkURLOmittedWhenUnconfigured(t *testing.T) {
+func TestResultsCallbackURLOmittedWhenUnconfigured(t *testing.T) {
 	params := testParams(t)
-	params.ResultSinkBaseURL = ""
+	params.ResultsCallbackBaseURL = ""
 	prov := &fakeProvisioner{}
 	p := New("stream-handler", params, prov)
 
@@ -304,8 +304,50 @@ func TestResultSinkURLOmittedWhenUnconfigured(t *testing.T) {
 	if len(prov.acquired) != 1 {
 		t.Fatalf("got %d Acquire calls, want 1", len(prov.acquired))
 	}
-	if got := prov.acquired[0].ResultSinkURL; got != "" {
-		t.Errorf("ResultSinkURL = %q, want empty so the renderer drops the env entry", got)
+	if got := prov.acquired[0].ResultsCallbackURL; got != "" {
+		t.Errorf("ResultsCallbackURL = %q, want empty so the renderer drops the env entry", got)
+	}
+}
+
+// The precedence that makes multi-replica frontends work: whatever the caller
+// named beats the configured fallback.
+func TestCallerCallbackBeatsConfiguredBase(t *testing.T) {
+	prov := &fakeProvisioner{}
+	p := New("stream-handler", testParams(t), prov)
+
+	req := triggerRequest()
+	req.Headers["x-cellphone-camera-results-callback"] = "http://10.42.1.7:8080/ingest"
+	if err := p.PreAdmit(context.Background(), req); err != nil {
+		t.Fatalf("PreAdmit: %v", err)
+	}
+	p.PreRequest(context.Background(), req, schedulingResult("decode", "decode", "10.1.2.3", "8000"))
+
+	if len(prov.acquired) != 1 {
+		t.Fatalf("got %d Acquire calls, want 1", len(prov.acquired))
+	}
+	want := "http://10.42.1.7:8080/ingest/" + prov.acquired[0].SessionID
+	if got := prov.acquired[0].ResultsCallbackURL; got != want {
+		t.Errorf("ResultsCallbackURL = %q, want %q -- the caller's pod, not the configured Service", got, want)
+	}
+}
+
+// A caller that names nothing still gets results, via the configured base.
+func TestConfiguredBaseUsedWhenCallerNamesNoCallback(t *testing.T) {
+	prov := &fakeProvisioner{}
+	p := New("stream-handler", testParams(t), prov)
+
+	req := triggerRequest()
+	if err := p.PreAdmit(context.Background(), req); err != nil {
+		t.Fatalf("PreAdmit: %v", err)
+	}
+	p.PreRequest(context.Background(), req, schedulingResult("decode", "decode", "10.1.2.3", "8000"))
+
+	if len(prov.acquired) != 1 {
+		t.Fatalf("got %d Acquire calls, want 1", len(prov.acquired))
+	}
+	want := "http://frontend.cellphone-camera.svc.cluster.local/ingest/" + prov.acquired[0].SessionID
+	if got := prov.acquired[0].ResultsCallbackURL; got != want {
+		t.Errorf("ResultsCallbackURL = %q, want the configured fallback %q", got, want)
 	}
 }
 
@@ -329,6 +371,10 @@ func TestParametersValidation(t *testing.T) {
 		"bad cache ttl": {
 			params:   Parameters{Namespace: "ns", JobTemplateConfigMap: "tmpl", TemplateCacheTTL: "soon"},
 			wantText: "not a valid duration",
+		},
+		"bad callback cidr": {
+			params:   Parameters{Namespace: "ns", JobTemplateConfigMap: "tmpl", AllowedResultsCallbackCIDRs: []string{"10.0.0.0/8", "not-a-cidr"}},
+			wantText: "not a valid CIDR",
 		},
 	}
 	for name, tc := range tests {
